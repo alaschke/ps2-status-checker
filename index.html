@@ -5,17 +5,24 @@
   <meta charset="UTF-8">
   <title>PlanetSide 2 POI Tracker</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <style>
     body {
       font-family: Arial, sans-serif;
       padding: 20px;
       background: #111;
       color: #eee;
-      width:auto;
+      width: auto;
       max-width: 1000px;
       margin: 0 auto 0;
     }
-    p {text-align: center;}
+
+    p {
+      text-align: center;
+    }
 
     h1 {
       text-align: center;
@@ -53,6 +60,12 @@
       text-align: center;
       margin-top: 20px;
     }
+
+    /* Hide second column (ID) when .hide-id is active */
+    .hide-id td:nth-child(2),
+    .hide-id th:nth-child(2) {
+      display: none;
+    }
   </style>
 </head>
 
@@ -60,11 +73,16 @@
   <h1>PS2 POI Tracker</h1>
   <p>AKA people I usually see and are likely in a platoon I might want to join.</p>
   <p>Biased against when I'm on and who my scatterbrained brain actually notices.</p>
+  <p id="last-updated" class="loading">Last Updated: —</p>
   <div id="status" class="loading">Loading character list...</div>
+  <button id="toggle-id-column" style="margin-top: 10px; display: none;">
+    Show IDs
+  </button>
   <table id="results" style="display:none;">
     <thead>
       <tr>
         <th>Name</th>
+        <th>Character ID</th>
         <th>Status</th>
       </tr>
     </thead>
@@ -75,25 +93,27 @@
     const CHARACTER_LIST_URL = `https://raw.githubusercontent.com/alaschke/ps2-status-checker/data/characters.json?t=${Date.now()}`;
     const CENSUS_SERVICE_ID = "jambooga";
 
-    const FACTIONS = {
-      "1": "VS",
-      "2": "NC",
-      "3": "TR",
-      "4": "NSO"
-    };
-
-
     async function fetchCharacterList() {
       const response = await fetch(CHARACTER_LIST_URL);
       if (!response.ok) throw new Error("Failed to load characters.json");
       return response.json();
     }
 
-    async function fetchCharacterData(name) {
+    async function fetchCharacterByName(name) {
+      console.log(`single querying: ${name}`);
       const url = `https://census.daybreakgames.com/s:${CENSUS_SERVICE_ID}/get/ps2:v2/character/?name.first_lower=${name.toLowerCase()}&c:resolve=online_status,outfit,location,times`;
       const response = await fetch(url);
       const data = await response.json();
       return data.character_list?.[0] || null;
+    }
+
+    async function fetchCharactersByIds(ids) {
+      console.log(`batch querying: ${ids.length} characters`);
+      const idQuery = ids.join(',');
+      const url = `https://census.daybreakgames.com/s:${CENSUS_SERVICE_ID}/get/ps2:v2/character/?character_id=${idQuery}&c:resolve=online_status,outfit,location,times`;
+      const response = await fetch(url);
+      const data = await response.json();
+      return data.character_list || [];
     }
 
     function getSessionDuration(lastLogin) {
@@ -116,6 +136,13 @@
       return `${minutes}m ago`;
     }
 
+    function lastUpdated() {
+      const p = document.getElementById("last-updated");
+      var d = new Date();
+      d.toString()
+      p.textContent = `Last Updated: ${d}`;
+
+    }
 
     async function loadStatuses() {
       const statusDiv = document.getElementById("status");
@@ -123,16 +150,28 @@
       const tbody = document.getElementById("results-body");
 
       try {
-        const names = await fetchCharacterList();
-        if (!Array.isArray(names)) throw new Error("Invalid character list format");
+        const entries = await fetchCharacterList();
+        if (!Array.isArray(entries)) throw new Error("Invalid character list format");
 
         statusDiv.textContent = "Fetching character data...";
 
-        const rawResults = await Promise.all(names.map(fetchCharacterData));
-        const results = rawResults.filter(Boolean);
+        // Mark entries missing ID
+        entries.forEach(entry => {
+          entry.missingId = !entry.id || entry.id.trim() === "";
+        });
 
-        // Sort alphabetically by outfit name (or "ZZZ" if no outfit)
-        results.sort((a, b) => {
+        // Build lookup by name and by ID for later matching
+        const entriesByName = new Map(entries.map(e => [e.name.toLowerCase(), e]));
+        const entriesById = new Map(entries.filter(e => e.id).map(e => [e.id, e]));
+
+        // Fetch batch results (with IDs) and singles (by name), then combine:
+        const batchResults = await fetchCharactersByIds(entries.filter(e => !e.missingId).map(e => e.id));
+        const singleResults = await Promise.all(entries.filter(e => e.missingId).map(e => fetchCharacterByName(e.name)));
+
+        const allResults = [...batchResults, ...singleResults.filter(Boolean)];
+
+        // Sort alphabetically by outfit alias
+        allResults.sort((a, b) => {
           const outfitA = a.outfit?.alias || "ZZZ";
           const outfitB = b.outfit?.alias || "ZZZ";
           return outfitA.localeCompare(outfitB);
@@ -140,15 +179,25 @@
 
         tbody.innerHTML = "";
 
-        results.forEach(character => {
+        allResults.forEach(character => {
           const name = character.name?.first || "Unknown";
+          const charId = character.character_id || "—";
           const outfit = character.outfit?.alias || "";
           const statusCode = character.online_status;
           const isOnline = statusCode === "1";
 
+          // Find the original entry (by ID if present, else by name)
+          let originalEntry = null;
+          if (charId !== "—") {
+            originalEntry = entriesById.get(charId);
+          }
+          if (!originalEntry) {
+            originalEntry = entriesByName.get(name.toLowerCase());
+          }
+
+          const isMissingId = originalEntry?.missingId || false;
+
           let statusText = isOnline ? "Online" : "Offline";
-          let session = "—";
-          
           if (isOnline && character.times?.last_login) {
             statusText += ` (Since: ${getSessionDuration(character.times.last_login)} ago)`;
           } else if (!isOnline && character.times?.last_save) {
@@ -157,16 +206,31 @@
 
           const row = document.createElement("tr");
           row.className = isOnline ? "online" : "offline";
+          row.dataset.charId = charId;
 
           row.innerHTML = `
-            <td>[${outfit}] ${name}</td>
-            <td>${statusText}</td>
+          <td>[${outfit}] ${name} ${isMissingId ? `<span title="Source missing character ID" style="color:orange;">⚠</span>` : ''}</td>
+          <td>${charId}</td>
+          <td class="status-cell">${statusText}</td>
           `;
 
           tbody.appendChild(row);
         });
 
         table.style.display = "table";
+        const toggleButton = document.getElementById("toggle-id-column");
+        toggleButton.style.display = "inline-block";
+
+        let idVisible = false;
+        toggleButton.addEventListener("click", () => {
+          idVisible = !idVisible;
+          document.getElementById("results").classList.toggle("hide-id", !idVisible);
+          toggleButton.textContent = idVisible ? "Hide IDs" : "Show IDs";
+        });
+
+        // Start with ID column hidden
+        document.getElementById("results").classList.add("hide-id");
+        toggleButton.textContent = "Show IDs";
         statusDiv.style.display = "none";
 
       } catch (error) {
@@ -174,9 +238,64 @@
         statusDiv.className = "error";
         statusDiv.textContent = "Error: " + error.message;
       }
+      lastUpdated();
+    }
+
+    function updateOnlineStatuses() {
+      console.log("[updateOnlineStatuses] Running...:");
+      const rows = document.querySelectorAll("#results-body tr");
+
+      const ids = Array.from(rows).map(row => row.dataset.charId).filter(Boolean);
+
+      if (ids.length === 0) {
+        console.warn("No character IDs found on rows. Skipping update.");
+        return;
+      }
+
+      const CHUNK_SIZE = 100;
+      const chunks = [];
+      for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+        chunks.push(ids.slice(i, i + CHUNK_SIZE));
+      }
+
+      chunks.forEach(async chunk => {
+        console.log(`batch querying: ${chunk.length} characters`)
+        const url = `https://census.daybreakgames.com/s:${CENSUS_SERVICE_ID}/get/ps2:v2/character/?character_id=${chunk.join(",")}&c:resolve=online_status,times`;
+        try {
+          const res = await fetch(url);
+          const data = await res.json();
+          if (!data.character_list) return;
+
+          data.character_list.forEach(character => {
+            const row = document.querySelector(`tr[data-char-id="${character.character_id}"]`);
+            if (!row) return;
+
+            const statusCell = row.querySelector("td.status-cell");
+            const statusCode = character.online_status;
+            const isOnline = statusCode === "1";
+            row.className = isOnline ? "online" : "offline";
+
+            let statusText = isOnline ? "Online" : "Offline";
+
+            if (isOnline && character.times?.last_login) {
+              statusText += ` (Since: ${getSessionDuration(character.times.last_login)} ago)`;
+            } else if (!isOnline && character.times?.last_save) {
+              statusText += ` (Last online: ${getTimeAgo(character.times.last_save)})`;
+            }
+
+            statusCell.textContent = statusText;
+          });
+
+        } catch (err) {
+          console.warn("Update failed:", err);
+        }
+      });
+      lastUpdated();
     }
 
     loadStatuses();
+    setInterval(updateOnlineStatuses, 60000); // every 60 seconds
+
   </script>
 </body>
 
