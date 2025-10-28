@@ -90,8 +90,27 @@
   </table>
 
   <script>
-    const CHARACTER_LIST_URL = `https://raw.githubusercontent.com/alaschke/ps2-status-checker/data/characters.json?t=${Date.now()}`;
-    const CENSUS_SERVICE_ID = "jambooga";
+    let CHARACTER_LIST_URL;
+    let CENSUS_SERVICE_ID;
+
+    fetch('/token.json')
+      .then(response => {
+        if (!response.ok) {
+          throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        return response.json();
+      })
+      .then(data => {
+        CHARACTER_LIST_URL = data.characters_url;
+        CENSUS_SERVICE_ID = data.service_id;
+
+        loadStatuses();
+        setInterval(updateOnlineStatuses, 60000); // every 60 seconds
+      })
+      .catch(error => {
+        console.error('Error fetching JSON:', error);
+      });
+
 
     async function fetchCharacterList() {
       const response = await fetch(CHARACTER_LIST_URL);
@@ -116,7 +135,10 @@
       return data.character_list || [];
     }
 
-    function getSessionDuration(lastLogin) {
+    function getSessionDuration(lastLogin, lastSave) {
+      if (lastLogin>lastSave){
+        return "<30m";
+      }
       const now = Math.floor(Date.now() / 1000);
       const seconds = now - parseInt(lastLogin);
       const minutes = Math.floor(seconds / 60);
@@ -278,7 +300,7 @@
             let statusText = isOnline ? "Online" : "Offline";
 
             if (isOnline && character.times?.last_login) {
-              statusText += ` (Since: ${getSessionDuration(character.times.last_login)} ago)`;
+              statusText += ` (Since: ${getSessionDuration(character.times.last_login,character.times.last_save)} ago)`;
             } else if (!isOnline && character.times?.last_save) {
               statusText += ` (Last online: ${getTimeAgo(character.times.last_save)})`;
             }
@@ -292,9 +314,6 @@
       });
       lastUpdated();
     }
-
-    loadStatuses();
-    setInterval(updateOnlineStatuses, 60000); // every 60 seconds
 
   </script>
 </body>
